@@ -29,6 +29,7 @@ const API = {
   ADD:    "/customer/add",
   UPDATE: (id) => `/customer/update/${id}`,
   DELETE: (id) => `/customer/delete/${id}`,
+  CLEAR: "/customer/clear",
 };
 
 async function apiFetch(url, options = {}) {
@@ -404,6 +405,29 @@ async function deleteCustomer(id, name) {
   }
 }
 
+async function clearAllCustomers() {
+
+  if (!confirm("⚠️ This will delete ALL customers permanently.\n\nContinue?"))
+    return;
+
+  try {
+
+    await apiFetch(API.CLEAR, { method: "DELETE" });
+
+    currentPage = 0;
+    await loadCustomers();
+
+    alert("All customers cleared.");
+
+  } catch (e) {
+
+    alert("Server error while clearing customers.");
+    console.error(e);
+
+  }
+
+}
+
 /* ════════════════════════════════════════
    SEARCH
 ════════════════════════════════════════ */
@@ -430,3 +454,419 @@ document.addEventListener("keydown", (e) => {
    INIT
 ════════════════════════════════════════ */
 loadCustomers();
+
+/* ════════════════════════════════════════
+   BULK IMPORT
+   Depends on:
+     - SheetJS  (xlsx)    — loaded via CDN in index.html
+     - Mammoth            — loaded via CDN in index.html
+════════════════════════════════════════ */
+
+const API_BULK = "/customer/bulk-add";
+
+// Rows parsed from the file, kept in memory until submitted or cleared
+let importRows = [];
+
+// ── Modal open / close ──────────────────────────────────────────────────────
+function openImportModal() {
+  const overlay = document.getElementById("import-modal-overlay");
+  overlay.style.display = "flex";
+  clearImportPreview();
+}
+
+function closeImportModal() {
+  document.getElementById("import-modal-overlay").style.display = "none";
+  clearImportPreview();
+}
+
+function handleImportOverlayClick(e) {
+  if (e.target === document.getElementById("import-modal-overlay")) closeImportModal();
+}
+
+// ── Drag-and-drop ───────────────────────────────────────────────────────────
+function handleImportDrop(e) {
+  e.preventDefault();
+  document.getElementById("import-dropzone-box").style.borderColor = "var(--border)";
+  const file = e.dataTransfer.files[0];
+  if (file) processImportFile(file);
+}
+
+function handleImportFile(e) {
+  const file = e.target.files[0];
+  if (file) processImportFile(file);
+  e.target.value = "";
+}
+
+// ── File dispatcher ─────────────────────────────────────────────────────────
+function processImportFile(file) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  setImportStatus("Parsing file…");
+  if (ext === "xlsx" || ext === "xls") {
+    parseXlsx(file);
+  } else if (ext === "docx") {
+    parseDocx(file);
+  } else {
+    setImportStatus("❌ Unsupported file type. Use .xlsx, .xls, or .docx", true);
+  }
+}
+
+// ── Date helpers ─────────────────────────────────────────────────────────────
+
+// Given a raw cell value (Date object or string with one or many dates),
+// returns the LATEST valid date as "YYYY-MM-DD", or "" if none found.
+function pickLatestDate(raw) {
+  if (!raw) return "";
+
+  // SheetJS parsed it as a JS Date already
+  if (raw instanceof Date) {
+    const y = raw.getFullYear();
+    if (y < 1990 || y > 2030) return "";
+    return toISO(raw);
+  }
+
+  const str = String(raw).trim();
+  if (!str) return "";
+
+  // Split on commas — multiple service dates in one cell
+  const parts = str.split(",").map(p => p.trim()).filter(Boolean);
+  let latest = null;
+
+  for (const part of parts) {
+    // Collapse date ranges like "5/11-15/24" → "5/11/24"
+    const cleaned = part.replace(/(\d{1,2})\/(\d{1,2})-\d{1,2}\//, "$1/$2/");
+
+    const d = parseDate(cleaned);
+    if (d && (!latest || d > latest)) latest = d;
+  }
+
+  return latest ? toISO(latest) : "";
+}
+
+function parseDate(str) {
+  // MM/DD/YYYY
+  let m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const d = new Date(+m[3], +m[1] - 1, +m[2]);
+    if (valid(d)) return d;
+  }
+  // MM/DD/YY
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+  if (m) {
+    const yyyy = +m[3] <= 30 ? 2000 + +m[3] : 1900 + +m[3];
+    const d = new Date(yyyy, +m[1] - 1, +m[2]);
+    if (valid(d)) return d;
+  }
+  return null;
+}
+
+function valid(d) {
+  return d instanceof Date && !isNaN(d) && d.getFullYear() >= 1990 && d.getFullYear() <= 2030;
+}
+
+function toISO(d) {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+function cleanContact(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim().replace(/\.0$/, ""); // strip Excel float suffix e.g. 9171234567.0
+  return (s === "None" || s === "null") ? "" : s;
+}
+
+// ── Column finder ────────────────────────────────────────────────────────────
+function findCol(headers, aliases) {
+  for (const alias of aliases) {
+    const idx = headers.indexOf(alias.toUpperCase());
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+// ── XLSX parser (handles your Masterlist format) ─────────────────────────────
+//
+// Your file structure:
+//   Row 1 → "CUSTOMER MASTERLIST"  (title)
+//   Row 2 → blank
+//   Row 3 → NO. | NAME | COMPLETE ADDRESS | DATE OF SERVICES | CONTACT NUMBER | TYPE OF SERVICES
+//   Row 4+ → data
+//
+// This parser auto-detects the header row (searches first 5 rows for "NAME")
+// so it also works with normal xlsx files where headers are on row 1.
+function parseXlsx(file) {
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    try {
+      const wb  = XLSX.read(e.target.result, { type: "array", cellDates: true });
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      // Read as 2D array — no auto header mapping yet
+      const all = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+      if (!all.length) {
+        setImportStatus("⚠️ The spreadsheet appears to be empty.", true);
+        return;
+      }
+
+      // Auto-detect header row: first row (within top 5) that has a "NAME" cell
+      let headerIdx = -1;
+      for (let i = 0; i < Math.min(5, all.length); i++) {
+        const cells = all[i].map(c => String(c).trim().toUpperCase());
+        if (cells.includes("NAME")) { headerIdx = i; break; }
+      }
+
+      if (headerIdx === -1) {
+        setImportStatus("⚠️ Could not find a header row containing 'NAME'.", true);
+        return;
+      }
+
+      const headers = all[headerIdx].map(c => String(c).trim().toUpperCase());
+
+      // Map column labels to array indices
+      const COL = {
+        name:            findCol(headers, ["NAME", "FULLNAME", "FULL NAME", "CUSTOMER NAME", "CUSTOMER"]),
+        contactNumber:   findCol(headers, ["CONTACT NUMBER", "CONTACT NO", "CONTACT", "PHONE", "MOBILE", "TEL", "TELEPHONE"]),
+        address:         findCol(headers, ["COMPLETE ADDRESS", "ADDRESS", "ADDR", "LOCATION"]),
+        lastServiceDate: findCol(headers, ["DATE OF SERVICES", "DATE OF SERVICE", "LAST SERVICE DATE", "LAST SERVICE", "SERVICE DATE", "DATE"]),
+        notes:           findCol(headers, ["TYPE OF SERVICES", "TYPE OF SERVICE", "NOTES", "NOTE", "REMARKS", "SERVICES", "COMMENTS"]),
+      };
+
+      if (COL.name === -1) {
+        setImportStatus("⚠️ 'NAME' column not found.", true);
+        return;
+      }
+
+      // Parse every row after the header
+      const rows = [];
+      for (let i = headerIdx + 1; i < all.length; i++) {
+        const row  = all[i];
+        const name = String(row[COL.name] ?? "").trim();
+        if (!name) continue; // skip blank / number-only rows
+
+        rows.push({
+          name,
+          contactNumber:   cleanContact(COL.contactNumber   !== -1 ? row[COL.contactNumber]   : ""),
+          address:         String(COL.address         !== -1 ? row[COL.address]         : "").trim(),
+          lastServiceDate: pickLatestDate(COL.lastServiceDate !== -1 ? row[COL.lastServiceDate] : ""),
+          notes:           String(COL.notes           !== -1 ? row[COL.notes]           : "").trim(),
+        });
+      }
+
+      if (!rows.length) {
+        setImportStatus("⚠️ No valid rows found after the header.", true);
+        return;
+      }
+
+      importRows = rows;
+      renderImportPreview();
+      setImportStatus(`✅ Parsed ${rows.length} customer(s) from "${file.name}"`);
+
+    } catch (err) {
+      setImportStatus("❌ Failed to parse spreadsheet: " + err.message, true);
+      console.error(err);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ── DOCX parser ─────────────────────────────────────────────────────────────
+function parseDocx(file) {
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    mammoth.convertToHtml({ arrayBuffer: e.target.result })
+      .then(function (result) {
+        const doc    = new DOMParser().parseFromString(result.value, "text/html");
+        const tables = doc.querySelectorAll("table");
+        let rows = [];
+
+        if (tables.length > 0) {
+          const trs = Array.from(tables[0].querySelectorAll("tr"));
+          if (trs.length < 2) {
+            setImportStatus("⚠️ Table found but has no data rows.", true);
+            return;
+          }
+          const headers = Array.from(trs[0].querySelectorAll("td,th"))
+            .map(td => td.textContent.trim().toUpperCase());
+
+          const COL = {
+            name:            findCol(headers, ["NAME", "FULLNAME", "FULL NAME"]),
+            contactNumber:   findCol(headers, ["CONTACT NUMBER", "CONTACT", "PHONE", "MOBILE"]),
+            address:         findCol(headers, ["COMPLETE ADDRESS", "ADDRESS", "ADDR"]),
+            lastServiceDate: findCol(headers, ["DATE OF SERVICES", "DATE OF SERVICE", "LAST SERVICE DATE", "DATE"]),
+            notes:           findCol(headers, ["TYPE OF SERVICES", "TYPE OF SERVICE", "NOTES", "REMARKS"]),
+          };
+
+          for (let i = 1; i < trs.length; i++) {
+            const cells = Array.from(trs[i].querySelectorAll("td,th")).map(td => td.textContent.trim());
+            const name  = COL.name !== -1 ? cells[COL.name] ?? "" : "";
+            if (!name) continue;
+            rows.push({
+              name,
+              contactNumber:   cleanContact(COL.contactNumber   !== -1 ? cells[COL.contactNumber]   : ""),
+              address:         COL.address         !== -1 ? cells[COL.address]         ?? "" : "",
+              lastServiceDate: pickLatestDate(COL.lastServiceDate !== -1 ? cells[COL.lastServiceDate] : ""),
+              notes:           COL.notes           !== -1 ? cells[COL.notes]           ?? "" : "",
+            });
+          }
+        } else {
+          // Plain-text / CSV fallback
+          const lines = doc.body.textContent.split("\n").map(l => l.trim()).filter(Boolean);
+          let start = (lines[0] && /name/i.test(lines[0])) ? 1 : 0;
+          for (let i = start; i < lines.length; i++) {
+            const p = lines[i].split(",").map(x => x.trim());
+            if (!p[0]) continue;
+            rows.push({
+              name:            p[0],
+              contactNumber:   cleanContact(p[4] ?? ""),
+              address:         p[2] ?? "",
+              lastServiceDate: pickLatestDate(p[3] ?? ""),
+              notes:           p[5] ?? "",
+            });
+          }
+        }
+
+        if (!rows.length) {
+          setImportStatus("⚠️ No valid rows found in the document.", true);
+          return;
+        }
+
+        importRows = rows;
+        renderImportPreview();
+        setImportStatus(`✅ Parsed ${rows.length} customer(s) from "${file.name}"`);
+      })
+      .catch(err => {
+        setImportStatus("❌ Failed to parse .docx: " + err.message, true);
+        console.error(err);
+      });
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ── Preview rendering ────────────────────────────────────────────────────────
+function renderImportPreview() {
+  const wrap  = document.getElementById("import-preview-wrap");
+  const tbody = document.getElementById("import-preview-tbody");
+  const count = document.getElementById("import-preview-count");
+
+  wrap.style.display = "block";
+  count.textContent  = `— ${importRows.length} row(s)`;
+  tbody.innerHTML    = "";
+
+  importRows.forEach((row, idx) => {
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid var(--border)";
+    tr.innerHTML = `
+      <td style="padding:7px 12px;color:var(--muted)">${idx + 1}</td>
+      <td style="padding:7px 12px;color:var(--text);font-weight:500">${row.name || '<span style="color:var(--danger)">missing</span>'}</td>
+      <td style="padding:7px 12px;color:var(--muted);font-family:monospace;font-size:0.72rem">${row.contactNumber || "—"}</td>
+      <td style="padding:7px 12px;color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${row.address}">${row.address || "—"}</td>
+      <td style="padding:7px 12px;color:var(--muted)">${row.lastServiceDate || "—"}</td>
+      <td style="padding:7px 12px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${row.notes}">${row.notes || "—"}</td>
+      <td style="padding:7px 12px;text-align:center">
+        <button onclick="removeImportRow(${idx})"
+                style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:0.9rem;line-height:1"
+                title="Remove this row">✕</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById("import-save-btn").disabled = importRows.length === 0;
+  document.getElementById("import-save-label").textContent = `Import ${importRows.length}`;
+}
+
+function removeImportRow(idx) {
+  importRows.splice(idx, 1);
+  if (importRows.length === 0) {
+    clearImportPreview();
+    setImportStatus("All rows removed.");
+  } else {
+    renderImportPreview();
+  }
+}
+
+function clearImportPreview() {
+  importRows = [];
+  document.getElementById("import-preview-wrap").style.display = "none";
+  document.getElementById("import-status").style.display       = "none";
+  document.getElementById("import-error-box").style.display    = "none";
+  document.getElementById("import-save-btn").disabled          = true;
+  document.getElementById("import-save-label").textContent     = "Import All";
+}
+
+// ── Status helper ────────────────────────────────────────────────────────────
+function setImportStatus(msg, isError = false) {
+  const wrap = document.getElementById("import-status");
+  const text = document.getElementById("import-status-text");
+  wrap.style.display = "block";
+  text.textContent   = msg;
+  text.style.color   = isError ? "var(--danger)" : "var(--muted)";
+}
+
+// ── Submit ───────────────────────────────────────────────────────────────────
+async function submitImport() {
+  if (!importRows.length) return;
+
+  const btn   = document.getElementById("import-save-btn");
+  const label = document.getElementById("import-save-label");
+  btn.disabled      = true;
+  label.textContent = "Importing…";
+
+  try {
+    const result = await apiFetch(API_BULK, {
+      method: "POST",
+      body:   JSON.stringify(importRows),
+    });
+
+    const errBox  = document.getElementById("import-error-box");
+    const errText = document.getElementById("import-error-text");
+
+    if (result.failed > 0) {
+      errBox.style.display = "block";
+      errText.textContent  = `⚠️ ${result.failed} row(s) failed:\n` + result.errors.join("\n");
+    }
+
+    setImportStatus(
+      `✅ ${result.saved} customer(s) imported successfully.` +
+      (result.failed > 0 ? ` ${result.failed} failed — see below.` : "")
+    );
+
+    currentPage = 0;
+    await loadCustomers();
+
+    if (result.failed === 0) setTimeout(closeImportModal, 1200);
+
+  } catch (e) {
+    setImportStatus("❌ Server error — " + e.message, true);
+    console.error(e);
+  } finally {
+    btn.disabled          = false;
+    label.textContent     = `Import ${importRows.length}`;
+  }
+}
+
+function openClearModal() {
+  document.getElementById("clear-modal-overlay").style.display = "flex";
+}
+
+function closeClearModal() {
+  document.getElementById("clear-modal-overlay").style.display = "none";
+}
+
+async function confirmClearCustomers() {
+
+  try {
+
+    await apiFetch(API.CLEAR, { method: "DELETE" });
+
+    currentPage = 0;
+    await loadCustomers();
+
+    closeClearModal();
+
+  } catch (e) {
+
+    alert("Server error while clearing customers.");
+    console.error(e);
+
+  }
+}

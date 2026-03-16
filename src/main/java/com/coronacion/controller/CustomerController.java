@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.coronacion.dto.CustomerDTO;
+import com.coronacion.entity.BulkImportResult;
 import com.coronacion.entity.Customer;
 import com.coronacion.service.CustomerService;
 
@@ -33,6 +34,12 @@ public class CustomerController {
     public ResponseEntity<CustomerDTO> addCustomer(@RequestBody CustomerDTO dto){
         CustomerDTO customer = customerService.addCustomer(dto);
         return ResponseEntity.ok(customer);
+    }
+
+    @PostMapping("/bulk-add")
+    public ResponseEntity<BulkImportResult> bulkAddCustomers(@RequestBody List<CustomerDTO> dtos){
+        BulkImportResult result = customerService.bulkAddCustomers(dtos);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/customers")
@@ -56,5 +63,11 @@ public class CustomerController {
     public ResponseEntity<Void> deleteCustomer(@PathVariable Long id) {
         customerService.deleteCustomer(id);
         return ResponseEntity.noContent().build(); // 204
+    }
+
+    @DeleteMapping("/clear")
+    public ResponseEntity<Void> clearCustomers() {
+        customerService.clearCustomers();
+        return ResponseEntity.noContent().build();
     }
 }

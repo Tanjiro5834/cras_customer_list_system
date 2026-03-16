@@ -309,6 +309,155 @@
           <div class="flex items-center gap-2.5">
             <!-- Search -->
             <div class="relative">
+              <button class="btn-secondary" onclick="openImportModal()" style="display:inline-flex;align-items:center;gap:6px">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                Import
+              </button>
+
+              <button class="btn-secondary whitespace-nowrap" style="display:inline-flex;align-items:center;gap:6px" onclick="openClearModal()">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                </svg>
+                Clear All
+              </button>
+              
+              
+              <!-- ② IMPORT MODAL — paste just before </body> ──────────────────────── -->
+              <div id="import-modal-overlay" onclick="handleImportOverlayClick(event)"
+                  style="display:none;position:fixed;inset:0;z-index:60;
+                          background:rgba(0,0,0,0.45);backdrop-filter:blur(6px);
+                          align-items:center;justify-content:center">
+              
+                <div class="modal-box" style="max-width:720px;width:95vw;max-height:90vh;overflow-y:auto">
+              
+                  <!-- Header -->
+                  <div class="flex items-center justify-between px-6 py-5 border-b panel-divider">
+                    <div class="flex items-center gap-3">
+                      <div class="modal-icon">
+                        <svg class="w-3.5 h-3.5" style="color:var(--muted)" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="17 8 12 3 7 8"/>
+                          <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 id="import-modal-title" style="font-size:0.92rem;font-weight:600;color:var(--text);letter-spacing:-0.02em">
+                          Import Customers
+                        </h3>
+                        <p style="font-size:0.72rem;color:var(--muted);margin-top:1px">
+                          Upload an <strong>.xlsx</strong> or <strong>.docx</strong> file — preview rows before saving
+                        </p>
+                      </div>
+                    </div>
+                    <button onclick="closeImportModal()" class="btn-icon">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
+              
+                  <!-- Drop zone -->
+                  <div id="import-dropzone" class="px-6 pt-5"
+                      ondragover="event.preventDefault();document.getElementById('import-dropzone-box').style.borderColor='var(--accent)'"
+                      ondragleave="document.getElementById('import-dropzone-box').style.borderColor='var(--border)'"
+                      ondrop="handleImportDrop(event)">
+                    <label for="import-file-input" id="import-dropzone-box"
+                          style="display:block;border:2px dashed var(--border);border-radius:14px;
+                                  padding:2rem 1.5rem;text-align:center;cursor:pointer;
+                                  transition:border-color 0.2s,background 0.2s;background:var(--bg)">
+                      <svg style="width:36px;height:36px;margin:0 auto 0.75rem;color:var(--muted);opacity:.5"
+                          fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                        <path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/>
+                        <polyline points="16 12 12 8 8 12"/>
+                        <line x1="12" y1="8" x2="12" y2="21"/>
+                      </svg>
+                      <p style="font-size:0.85rem;color:var(--text);font-weight:500">
+                        Drop file here or <span style="color:var(--accent)">click to browse</span>
+                      </p>
+                      <p style="font-size:0.72rem;color:var(--muted);margin-top:4px">
+                        Supported: .xlsx, .xls, .docx &nbsp;·&nbsp; Max 10 MB
+                      </p>
+                    </label>
+                    <input id="import-file-input" type="file" accept=".xlsx,.xls,.docx" style="display:none"
+                          onchange="handleImportFile(event)" />
+                  </div>
+              
+                  <!-- Template hint -->
+                  <div class="px-6 pt-3 pb-1">
+                    <p style="font-size:0.72rem;color:var(--muted)">
+                      📋 Expected columns (any order):
+                      <code style="background:var(--surface2);padding:1px 5px;border-radius:4px;font-size:0.7rem">
+                        name&nbsp;·&nbsp;contactNumber&nbsp;·&nbsp;address&nbsp;·&nbsp;lastServiceDate&nbsp;·&nbsp;notes
+                      </code>
+                      — only <strong>name</strong> is required.
+                    </p>
+                  </div>
+              
+                  <!-- Parse status -->
+                  <div id="import-status" class="px-6 pt-2" style="display:none">
+                    <p id="import-status-text" style="font-size:0.78rem;color:var(--muted)"></p>
+                  </div>
+              
+                  <!-- Preview table -->
+                  <div id="import-preview-wrap" class="px-6 pt-3" style="display:none">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                      <p style="font-size:0.78rem;font-weight:600;color:var(--text);letter-spacing:-0.01em">
+                        Preview
+                        <span id="import-preview-count" style="font-weight:400;color:var(--muted)"></span>
+                      </p>
+                      <button onclick="clearImportPreview()"
+                              style="font-size:0.72rem;color:var(--muted);text-decoration:underline;background:none;border:none;cursor:pointer">
+                        Clear
+                      </button>
+                    </div>
+                    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+                      <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+                        <thead>
+                          <tr style="background:var(--surface2)">
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">#</th>
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">Name</th>
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">Contact</th>
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">Address</th>
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">Last Service</th>
+                            <th style="padding:8px 12px;text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">Notes</th>
+                            <th style="padding:8px 12px;text-align:center;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)">✕</th>
+                          </tr>
+                        </thead>
+                        <tbody id="import-preview-tbody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+              
+                  <!-- Import error summary -->
+                  <div id="import-error-box" class="px-6 pt-2" style="display:none">
+                    <p id="import-error-text" style="font-size:0.75rem;color:var(--danger)"></p>
+                  </div>
+              
+                  <!-- Footer -->
+                  <div class="px-6 py-5 flex items-center justify-between border-t panel-divider" style="margin-top:1rem">
+                    <p id="import-footer-hint" style="font-size:0.72rem;color:var(--muted)">
+                      Review rows above, then click Import to save to the database.
+                    </p>
+                    <div style="display:flex;gap:8px">
+                      <button class="btn-secondary" onclick="closeImportModal()">Cancel</button>
+                      <button id="import-save-btn" class="btn-primary" onclick="submitImport()" disabled>
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="17 8 12 3 7 8"/>
+                          <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span id="import-save-label">Import All</span>
+                      </button>
+                    </div>
+                  </div>
+              
+                </div>
+              </div>
               <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style="color:var(--muted)">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <circle cx="11" cy="11" r="8"/>
@@ -454,6 +603,50 @@
       </div>
     </div>
 
-    <script src="/script.js"></script>
+    <!-- CLEAR ALL MODAL -->
+    <div id="clear-modal-overlay"
+        style="display:none;position:fixed;inset:0;z-index:60;
+                background:rgba(0,0,0,0.45);backdrop-filter:blur(6px);
+                align-items:center;justify-content:center">
+
+      <div class="modal-box" style="max-width:420px;width:92vw">
+
+        <!-- Header -->
+        <div class="flex items-center gap-3 px-6 py-5 border-b panel-divider">
+          <div class="modal-icon">
+            <svg class="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            </svg>
+          </div>
+          <div>
+            <h3 style="font-weight:600">Clear All Customers</h3>
+            <p style="font-size:0.75rem;color:var(--muted)">
+              This action will permanently remove all records.
+            </p>
+          </div>
+        </div>
+
+        <!-- Body -->
+        <div class="px-6 py-5">
+          <p style="font-size:0.85rem;color:var(--text)">
+            Are you sure you want to delete all customers from the system?
+          </p>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-6 pb-5 flex justify-end gap-2">
+          <button class="btn-secondary" onclick="closeClearModal()">Cancel</button>
+          <button class="btn-primary" style="background:#dc2626"
+                  onclick="confirmClearCustomers()">
+            Delete All
+          </button>
+        </div>
+
+      </div>
+    </div>
+    <script src="libs/xlsx.full.min.js" defer></script>
+    <script src="libs/mammoth.browser.min.js" defer></script>
+    <script src="script.js" defer></script>
   </body>
 </html>

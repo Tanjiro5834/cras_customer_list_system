@@ -14,7 +14,7 @@ public class CustomerDTO {
     private String name;
     private String contactNumber;
     private String address;
-    private LocalDate lastServiceDate;
+    private String lastServiceDate;
     private String notes;
 
     // Entity -> DTO
@@ -24,7 +24,11 @@ public class CustomerDTO {
                 .name(customer.getName())
                 .contactNumber(customer.getContactNumber())
                 .address(customer.getAddress())
-                .lastServiceDate(customer.getLastServiceDate())
+                .lastServiceDate(
+                    customer.getLastServiceDate() != null
+                        ? customer.getLastServiceDate().toString()
+                        : null
+                )
                 .notes(customer.getNotes())
                 .build();
     }
@@ -36,8 +40,18 @@ public class CustomerDTO {
         customer.setName(this.name);
         customer.setContactNumber(this.contactNumber);
         customer.setAddress(this.address);
-        customer.setLastServiceDate(this.lastServiceDate);
+        customer.setLastServiceDate(parseDate(this.lastServiceDate));
         customer.setNotes(this.notes);
         return customer;
+    }
+
+    // Safely parse "YYYY-MM-DD" string -> LocalDate, returns null for blank/invalid
+    public static LocalDate parseDate(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return LocalDate.parse(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 }
